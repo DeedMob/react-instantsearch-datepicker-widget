@@ -157,7 +157,9 @@ class SearchCalendar extends Component {
           onDayClick={ this.handleDayClick }
           // disabledDays={ day => day < now }
         />
-        <ResetCalendar reset={() => refine({min: null, max: null})} />
+        <a onClick={() => refine({min: null, max: null})}>
+          Reset
+        </a>
       </div>
     );
   }
