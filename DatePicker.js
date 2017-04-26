@@ -1,3 +1,4 @@
+/* @flow */
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import { connectRange } from 'react-instantsearch/connectors';
@@ -26,23 +27,37 @@ const setToEndOfDay = (d) => {
   return d;
 }
 
+const dateToUnix = (d, startOrEnd) => {
+  let newDate = new Date(d);
+  if(startOrEnd === "start"){
+    setToStartOfDay(newDate);
+    return newDate.getTime();
+  }
+  else if(startOrEnd === "end") {
+    setToEndOfDay(newDate);
+    return newDate.getTime();
+  }
+}
+
+const unixToDate = (secs) => new Date(secs);
+
 class SearchCalendar extends Component {
   static contextTypes = {
     canRefine: PropTypes.func,
+    ais: PropTypes.object.isRequired
   }
   constructor(props) {
     super(props);
     this.handleDayClick = this.handleDayClick.bind(this);
     this.updateRefine = this.updateRefine.bind(this);
-    this.unixToDate = this.unixToDate.bind(this);
-    this.dateToUnix = this.dateToUnix.bind(this);
 
     this.state = this.props.canRefine ? {
-      from: this.unixToDate(props.currentRefinement.min),
-      to: this.unixToDate(props.currentRefinement.max),
+      from: unixToDate(props.currentRefinement.min),
+      to: unixToDate(props.currentRefinement.max),
       fromUnix: props.currentRefinement.min,
-      toUnix: props.currentRefinement.max
-    } : { from: null, to: null, fromUnix: null, toUnix: null }
+      toUnix: props.currentRefinement.max,
+      isFromPivot: true,
+    } : { from: null, to: null, fromUnix: null, toUnix: null, isFromPivot: true }
   }
   componentWillMount(){
     if(this.context.canRefine) this.context.canRefine(this.props.canRefine);
@@ -51,49 +66,79 @@ class SearchCalendar extends Component {
     if(nextProps.currentRefinement){
       this.setState({
         from: nextProps.currentRefinement.min ?
-          this.unixToDate(nextProps.currentRefinement.min) : null,
+          unixToDate(nextProps.currentRefinement.min) : null,
         to: nextProps.currentRefinement.max ?
-          this.unixToDate(nextProps.currentRefinement.max) : null,
+          unixToDate(nextProps.currentRefinement.max) : null,
         fromUnix: nextProps.currentRefinement.min,
         toUnix: nextProps.currentRefinement.max
       })
     }
     if(this.context.canRefine) this.context.canRefine(nextProps.canRefine);
   }
-  unixToDate(secs){
-    return new Date(secs);
-  }
-  dateToUnix(d, startOrEnd){
-    let newDate = new Date(d);
-    if(startOrEnd === "start"){
-      setToStartOfDay(newDate);
-      return newDate.getTime();
-    }
-    else if(startOrEnd === "end") {
-      setToEndOfDay(newDate);
-      return newDate.getTime();
-    }
-  }
   updateRefine(startDate, endDate){
     return this.props.refine({
-      min: this.dateToUnix(startDate, "start"),
-      max: this.dateToUnix(endDate, "end")
+      min: dateToUnix(startDate, "start"),
+      max: dateToUnix(endDate, "end")
     })
   }
-  handleDayClick(dayDate) {
-    let range = DateUtils.addDayToRange(dayDate, this.state);
-    if(range.to && !range.from) range = {from: range.to, to: range.to};
-    else if(range.to && range.from && range.to < range.from) range = {to: range.from, from: range.to};
-    else if(range.from && !range.to) range = { from: range.from, to: range.from };
-    this.updateRefine(range.from, range.to);
-    range.fromUnix = this.dateToUnix(range.from);
-    range.toUnix = this.dateToUnix(range.to);
-    this.setState(range);
+  /* Date selection state transformation:
+    (Constraint either both from, to are null or both Date objects, Constraint from < to)
+
+    {from: null, to: null} & Click date d => {from: d, to: d}
+    {from: d, to: d} & Click date d => {from: null, to: null}
+    {from: d, to: d} & Click date d1 != d => d1 < d ? {from: d1, to: d} : {from: d, to: d1}
+    {from: d1, to: d2} & Click date d => isFromPivot ? (d < d1 ? {from: d, to: d1} : {from: d1, to: d}) : (d < d2 ? {from: d, to: d2} : {from: d2, to: d})
+  */
+  handleDayClick(clickedDate) {
+    const { from, to, isFromPivot } = this.state;
+    let nextState;
+    if((from === null && to === null) || this.isReset)
+      nextState = { from: clickedDate, to: clickedDate, fromUnix: dateToUnix(clickedDate), toUnix: dateToUnix(clickedDate) };
+    else if(DateUtils.isSameDay(from, to)){
+      if(DateUtils.isSameDay(clickedDate, from)){
+        nextState = { from: null, to: null, fromUnix: null, toUnix: null, isFromPivot: true }
+      }
+      else if(clickedDate < from){
+        nextState = { from: clickedDate, fromUnix: dateToUnix(clickedDate), isFromPivot: true }
+      }
+      else if(clickedDate >= from){
+        nextState = { to: clickedDate, toUnix: dateToUnix(clickedDate), isFromPivot: true }
+      }
+    }
+    else {
+      if(isFromPivot){
+        if(clickedDate < from){
+          nextState = { from: clickedDate, fromUnix: dateToUnix(clickedDate), to: from, toUnix: dateToUnix(from) };
+        }
+        else {
+          nextState = { to: clickedDate, toUnix: dateToUnix(clickedDate) };
+        }
+      }
+      else {
+        if(clickedDate < to){
+          nextState = { from: clickedDate, fromUnix: dateToUnix(clickedDate) };
+        }
+        else {
+          nextState = { from: to, fromUnix: dateToUnix(to), to: clickedDate, toUnix: dateToUnix(clickedDate) };
+        }
+      }
+    }
+
+    const completeNextState = Object.assign({}, this.state, nextState);
+    this.setState(nextState);
+    this.updateRefine(completeNextState.from, completeNextState.to);
+  }
+  get isReset(){
+    return this.state.fromUnix === this.props.min && this.state.toUnix === this.props.max;
   }
   render(){
-    const { from, to, fromUnix, toUnix } = this.state;
-    const { min, max, getLocale, refine } = this.props;
-    const isReset = fromUnix === min && toUnix === max;
+    const daysWithContent = !this.context.ais.store.getState().results ? [] :
+      this.context.ais.store.getState().results.hits
+        .filter(hit => hit.date_starting)
+        .map(hit => unixToDate(hit.date_starting));
+    console.log(daysWithContent);
+    const { from, to } = this.state;
+    const { getLocale, refine } = this.props;
     const now = new Date();
     setToStartOfDay(now);
     const locale = getLocale();
@@ -105,11 +150,14 @@ class SearchCalendar extends Component {
           localeUtils={ MomentLocaleUtils }
           initialMonth={ new Date() }
           numberOfMonths={ 1 }
-          selectedDays={ !isReset ? [from, { from, to }] : () => false }
+          modifiers={{
+            hasCard: daysWithContent
+          }}
+          selectedDays={ !this.isReset ? [from, { from, to }] : () => false }
           onDayClick={ this.handleDayClick }
-          disabledDays={ day => day < now }
+          // disabledDays={ day => day < now }
         />
-        <ResetCalendar setReset={() => refine({min: null, max: null})} />
+        <ResetCalendar reset={() => refine({min: null, max: null})} />
       </div>
     );
   }
